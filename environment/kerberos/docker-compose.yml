@@ -78,7 +78,7 @@ services:
       KAFKA_ZOOKEEPER_SET_ACL: "true"
       KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
       KAFKA_LOG4J_LOGGERS: "kafka.authorizer.logger=INFO"
-      KAFKA_SUPER_USERS: User:admin;User:kafka;User:schemaregistry;User:connect;User:controlcenter;User:ksqldb
+      KAFKA_SUPER_USERS: User:admin;User:kafka;User:schemaregistry;User:connect;User:controlcenter;User:ksqldb;User:sarama
       KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/broker.sasl.jaas.config
                   # -Djdk.security.allowNonCaAnchor=true
                   # -Dsun.security.krb5.disableReferrals=true
@@ -130,7 +130,7 @@ services:
       KAFKA_ZOOKEEPER_SET_ACL: "true"
       KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
       KAFKA_LOG4J_LOGGERS: "kafka.authorizer.logger=INFO"
-      KAFKA_SUPER_USERS: User:admin;User:kafka;User:schemaregistry;User:connect;User:controlcenter;User:ksqldb
+      KAFKA_SUPER_USERS: User:admin;User:kafka;User:schemaregistry;User:connect;User:controlcenter;User:ksqldb;User:sarama
       KAFKA_OPTS: -Djava.security.auth.login.config=/etc/kafka/broker.sasl.jaas.config
                   # -Djdk.security.allowNonCaAnchor=true
                   # -Dsun.security.krb5.disableReferrals=true
@@ -274,6 +274,96 @@ services:
         principal=\"controlcenter@TEST.CONFLUENT.IO\";"
       CONTROL_CENTER_KAFKA_MYCLUSTER_SASL_MECHANISM: GSSAPI
       CONTROL_CENTER_KAFKA_MYCLUSTER_SASL_KERBEROS_SERVICE_NAME: kafka
+
+  controller:
+      container_name: ticdc_controller
+      image: qa/ticdc-hack
+      volumes:
+        - ../../environment/kerberos/logs:/logs
+        - ../../environment/kerberos/configs:/configs
+      environment:
+        GO_FAILPOINTS: ${GO_FAILPOINTS}
+      command: -c "/usr/bin/tail -f /dev/null"
+      entrypoint: "/bin/sh"
+      depends_on:
+        - "upstream-tidb"
+        - "broker"
+      restart: on-failure
+
+  capturer0:
+      image: qa/ticdc-hack
+      volumes:
+        - ../../environment/kerberos/logs:/logs
+      ports:
+        - "8300:8300"
+      environment:
+        GO_FAILPOINTS: ${GO_FAILPOINTS}
+      entrypoint: "/cdc server"
+      command:
+        - --addr=0.0.0.0:8300
+        - --pd=http://upstream-pd:2379
+        - --log-file=/logs/capturer0.log
+        - --log-level=debug
+        - --data-dir=/data
+        - --advertise-addr=capturer0:8300
+      depends_on:
+        - "upstream-tidb"
+      restart: on-failure
+
+  upstream-pd:
+      image: pingcap/pd:v6.0.0
+      ports:
+        - "2379:2379"
+      volumes:
+        - ../../environment/kerberos/configs/pd.toml:/pd.toml:ro
+        - ../../environment/kerberos/logs:/logs
+      command:
+        - --name=upstream-pd
+        - --client-urls=http://0.0.0.0:2379
+        - --peer-urls=http://0.0.0.0:2380
+        - --advertise-client-urls=http://upstream-pd:2379
+        - --advertise-peer-urls=http://upstream-pd:2380
+        - --initial-cluster=upstream-pd=http://upstream-pd:2380
+        - --data-dir=/data/upstream-pd
+        - --config=/pd.toml
+        - --log-file=/logs/upstream-pd.log
+      restart: on-failure
+
+  upstream-tikv0:
+      image: pingcap/tikv:v6.0.0
+      volumes:
+        - ../../environment/kerberos/configs/tikv.toml:/tikv.toml:ro
+        - ../../environment/kerberos/logs:/logs
+      command:
+        - --addr=0.0.0.0:20160
+        - --advertise-addr=upstream-tikv0:20160
+        - --data-dir=/data/upstream-tikv0
+        - --pd=upstream-pd:2379
+        - --config=/tikv.toml
+        - --log-file=/logs/upstream-tikv0.log
+      depends_on:
+        - "upstream-pd"
+      restart: on-failure
+
+
+  upstream-tidb:
+      image: pingcap/tidb:v6.0.0
+      ports:
+        - "4000:4000"
+        - "10080:10080"
+      volumes:
+        - ../../environment/kerberos/configs/tidb.toml:/tidb.toml:ro
+        - ../../environment/kerberos/logs:/logs
+      command:
+        - --store=tikv
+        - --path=upstream-pd:2379
+        - --config=/tidb.toml
+        - --log-file=/logs/upstream-tidb.log
+        - --advertise-address=upstream-tidb
+      depends_on:
+        - "upstream-tikv0"
+      restart: on-failure
+
 
 volumes:
   secret: {}
